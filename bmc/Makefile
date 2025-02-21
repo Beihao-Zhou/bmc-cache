@@ -21,8 +21,8 @@ LIBBPF_PATH = $(LINUX_LIB_PATH)/bpf
 
 TARGETS += bmc
 
-CLANG ?= clang-9
-LLC ?= llc-9
+CLANG ?= clang
+LLC ?= llc
 CC := gcc
 
 KERN_SOURCES = ${TARGETS:=_kern.c}
@@ -35,9 +35,10 @@ LIBBPF = $(LIBBPF_PATH)/libbpf.a
 CFLAGS := -g -O2 -Wall
 CFLAGS += -I.
 CFLAGS += -I$(LINUX_LIB_PATH)
-CFLAGS += -I$(LINUX_TOOLS_PATH)/include/uapi
+# CFLAGS += -I$(LINUX_TOOLS_PATH)/include/uapi
+EXTRA_CFLAGS_TMP := -I/usr/include -I/usr/include/bpf
 
-LDFLAGS ?= -L$(LIBBPF_PATH) -l:libbpf.a -lelf $(USER_LIBS)
+LDFLAGS ?= -L$(LIBBPF_PATH) -l:libbpf.a -lelf -lz
 
 NOSTDINC_FLAGS := -nostdinc -isystem $(shell $(CC) -print-file-name=include)
 ARCH=$(shell uname -m | sed 's/x86_64/x86/' | sed 's/i386/x86/')
@@ -115,9 +116,10 @@ $(LIBBPF): $(wildcard $(LIBBPF_PATH)/*.[ch] $(LIBBPF_PATH)/Makefile)
 # unaligned access checks where necessary
 #
 $(KERN_OBJECTS): %.o: %.c
-	$(CLANG) -S $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(EXTRA_CFLAGS) \
+	$(CLANG) -S $(NOSTDINC_FLAGS) $(LINUXINCLUDE) $(EXTRA_CFLAGS_TMP) \
 	    -D__KERNEL__ -D__ASM_SYSREG_H -D__BPF_TRACING__ \
 	    -D__TARGET_ARCH_$(ARCH) \
+		-Wno-error=ignored-attributes -fcf-protection=none \
 	    -Wno-unused-value -Wno-pointer-sign \
 	    -Wno-compare-distinct-pointer-types \
 	    -Wno-gnu-variable-sized-type-not-at-end \
