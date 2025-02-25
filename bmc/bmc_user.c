@@ -42,14 +42,14 @@ struct bpf_progs_desc {
 };
 
 static struct bpf_progs_desc progs[] = {
-	{"bmc_rx_filter", BPF_PROG_TYPE_XDP, 0, -1, NULL},
-	{"bmc_hash_keys", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_HASH_KEYS, NULL},
-	{"bmc_prepare_packet", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_PREPARE_PACKET, NULL},
-	{"bmc_write_reply", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_WRITE_REPLY, NULL},
-	{"bmc_invalidate_cache", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_INVALIDATE_CACHE, NULL},
+	{"bmc_rx_filter_main", BPF_PROG_TYPE_XDP, 0, -1, NULL},
+	{"bmc_hash_keys_main", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_HASH_KEYS, NULL},
+	{"bmc_prepare_packet_main", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_PREPARE_PACKET, NULL},
+	{"bmc_write_reply_main", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_WRITE_REPLY, NULL},
+	{"bmc_invalidate_cache_main", BPF_PROG_TYPE_XDP, 0, BMC_PROG_XDP_INVALIDATE_CACHE, NULL},
 
-	{"bmc_tx_filter", BPF_PROG_TYPE_SCHED_CLS, 1, -1, NULL},
-	{"bmc_update_cache", BPF_PROG_TYPE_SCHED_CLS, 0, BMC_PROG_TC_UPDATE_CACHE, NULL},
+	{"bmc_tx_filter_main", BPF_PROG_TYPE_SCHED_CLS, 1, -1, NULL},
+	{"bmc_update_cache_main", BPF_PROG_TYPE_SCHED_CLS, 0, BMC_PROG_TC_UPDATE_CACHE, NULL},
 };
 
 uint32_t fnv1a_hash32(char *key, size_t length, uint32_t hash)
@@ -128,6 +128,19 @@ int write_stat_line(FILE *fp, int map_fd)
 
 	return 0;
 }
+
+
+void list_bpf_programs(struct bpf_object *obj) {
+    struct bpf_program *prog;
+
+    printf("Listing all BPF programs in the object file:\n");
+    bpf_object__for_each_program(prog, obj) {
+        const char *sec_name = bpf_program__section_name(prog);
+        const char *prog_name = bpf_program__name(prog);
+        printf(" - Section: %s, Name: %s\n", sec_name ? sec_name : "(unknown)", prog_name ? prog_name : "(unnamed)");
+    }
+}
+
 
 static int print_bpf_verifier(enum libbpf_print_level level,
 							const char *format, va_list args)
@@ -222,12 +235,14 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
+	list_bpf_programs(obj);
+
 	prog_count = sizeof(progs) / sizeof(progs[0]);
 
 	for (int i = 0; i < prog_count; i++) {
 		progs[i].prog = bpf_object__find_program_by_name(obj, progs[i].name);
 		if (!progs[i].prog) {
-			fprintf(stderr, "Error: bpf_object__find_program_by_title failed\n");
+			fprintf(stderr, "Error: bpf_object__find_program_by_name failed\n");
 			return 1;
 		}
 		bpf_program__set_type(progs[i].prog, progs[i].type);

@@ -153,37 +153,61 @@ int bmc_rx_filter_main(struct xdp_md *ctx)
 			return XDP_PASS;
 	}
 
-	if (dport == htons(11211) && payload+4 <= data_end) {
+	if (dport == htons(11211)) {  
+		// Ensure payload is within bounds before accessing its bytes
+		if ((payload + 4 <= data_end) &&
+			(payload < data_end) &&
+			(payload + 1 < data_end) &&
+			(payload + 2 < data_end) &&
+			(payload + 3 < data_end)) {
 
-		if (ip->protocol == IPPROTO_UDP && payload[0] == 'g' && payload[1] == 'e' && payload[2] == 't' && payload[3] == ' ') { // is this a GET request
-			unsigned int zero = 0;
-			struct bmc_stats *stats = bpf_map_lookup_elem(&map_stats, &zero);
-			if (!stats) {
-				return XDP_PASS;
-			}
-			stats->get_recv_count++;
+			if (ip->protocol == IPPROTO_UDP &&
+				payload[0] == 'g' &&
+				payload[1] == 'e' &&
+				payload[2] == 't' &&
+				payload[3] == ' ') {  // GET request detected
 
-			struct parsing_context *pctx = bpf_map_lookup_elem(&map_parsing_context, &zero);
-			if (!pctx) {
-				return XDP_PASS;
-			}
-			pctx->key_count = 0;
-			pctx->current_key = 0;
-			pctx->write_pkt_offset = 0;
-
-			unsigned int off;
-#pragma clang loop unroll(disable)
-			for (off = 4; off < BMC_MAX_PACKET_LENGTH && payload+off+1 <= data_end && payload[off] == ' '; off++) {} // move offset to the start of the first key
-			if (off < BMC_MAX_PACKET_LENGTH) {
-				pctx->read_pkt_offset = off; // save offset
-				if (bpf_xdp_adjust_head(ctx, (int)(sizeof(*eth) + sizeof(*ip) + sizeof(*udp) + sizeof(struct memcached_udp_header) + off))) { // push headers + 'get ' keyword
+				unsigned int zero = 0;
+				struct bmc_stats *stats = bpf_map_lookup_elem(&map_stats, &zero);
+				if (!stats) {
 					return XDP_PASS;
 				}
-				bpf_tail_call(ctx, &map_progs_xdp, BMC_PROG_XDP_HASH_KEYS);
+				stats->get_recv_count++;
+
+				struct parsing_context *pctx = bpf_map_lookup_elem(&map_parsing_context, &zero);
+				if (!pctx) {
+					return XDP_PASS;
+				}
+				pctx->key_count = 0;
+				pctx->current_key = 0;
+				pctx->write_pkt_offset = 0;
+
+				unsigned int off = 4;  // Start scanning after "get "
+
+				// Bounds checking: Ensure payload+off is within data_end before accessing it
+	#pragma clang loop unroll(disable)
+				while (off < BMC_MAX_PACKET_LENGTH &&
+					(payload + off + 1 < data_end) &&
+					payload[off] == ' ') {
+					off++; // Move offset to start of first key
+				}
+
+				if (off < BMC_MAX_PACKET_LENGTH) {
+					pctx->read_pkt_offset = off; // Save offset
+
+					// Ensure enough headroom before calling bpf_xdp_adjust_head
+					if ((void *)(long)ctx->data + sizeof(*eth) + sizeof(*ip) + sizeof(*udp) + sizeof(struct memcached_udp_header) + off >= data_end) {
+						return XDP_PASS; // Avoid overflow
+					}
+
+					if (bpf_xdp_adjust_head(ctx, (int)(sizeof(*eth) + sizeof(*ip) + sizeof(*udp) + sizeof(struct memcached_udp_header) + off))) {
+						return XDP_PASS;
+					}
+					bpf_tail_call(ctx, &map_progs_xdp, BMC_PROG_XDP_HASH_KEYS);
+				}
+			} else if (ip->protocol == IPPROTO_TCP) {
+				bpf_tail_call(ctx, &map_progs_xdp, BMC_PROG_XDP_INVALIDATE_CACHE);
 			}
-		}
-		else if (ip->protocol == IPPROTO_TCP) {
-			bpf_tail_call(ctx, &map_progs_xdp, BMC_PROG_XDP_INVALIDATE_CACHE);
 		}
 	}
 
@@ -199,8 +223,8 @@ int bmc_hash_keys_main(struct xdp_md *ctx)
 	char *payload = (char *) data;
 	unsigned int zero = 0;
 
-	if (payload >= data_end)
-		return XDP_PASS;
+    if ((void *)payload >= data_end)
+        return XDP_PASS;
 
 	struct parsing_context *pctx = bpf_map_lookup_elem(&map_parsing_context, &zero);
 	if (!pctx) {
@@ -213,11 +237,14 @@ int bmc_hash_keys_main(struct xdp_md *ctx)
 	}
 	key->hash = FNV_OFFSET_BASIS_32;
 
-	unsigned int off, done_parsing = 0, key_len = 0;
+    unsigned int off = 0, done_parsing = 0, key_len = 0;
 
 	// compute the key hash
 #pragma clang loop unroll(disable)
-	for (off = 0; off < BMC_MAX_KEY_LENGTH+1 && payload+off+1 <= data_end; off++) {
+	for (off = 0; off < BMC_MAX_KEY_LENGTH + 1; off++) {
+		if ((void *)(payload + off) > data_end || (void *)(payload + off + 1) > data_end)
+			return XDP_PASS; // Prevent out-of-bounds access
+
 		if (payload[off] == '\r') {
 			done_parsing = 1;
 			break;
@@ -226,7 +253,7 @@ int bmc_hash_keys_main(struct xdp_md *ctx)
 			break;
 		}
 		else if (payload[off] != ' ') {
-			key->hash ^= payload[off];
+			key->hash ^= (u32)payload[off];
 			key->hash *= FNV_PRIME_32;
 			key_len++;
 		}
@@ -247,11 +274,19 @@ int bmc_hash_keys_main(struct xdp_md *ctx)
 	if (entry->valid && entry->hash == key->hash) { // potential cache hit
 		bpf_spin_unlock(&entry->lock);
 		unsigned int i = 0;
+		unsigned int key_copy_limit = key_len; 
+		if ((void *)(payload + key_copy_limit) >= data_end)
+            key_copy_limit = (char *)data_end - payload;
+
 #pragma clang loop unroll(disable)
-		for (; i < key_len && payload+i+1 <= data_end; i++) { // copy the request key to compare it with the one stored in the cache later
-			key->data[i] = payload[i];
+		for (; i < key_copy_limit; i++) { // copy the request key to compare it with the one stored in the cache later
+			if (payload > data) {
+				if ((void *)(payload + i) >= data_end)
+					break;
+				key->data[i] = payload[i];
+			}
 		}
-		key->len = key_len;
+		key->len = key_copy_limit;
 		pctx->key_count++;
 	} else { // cache miss
 		bpf_spin_unlock(&entry->lock);
