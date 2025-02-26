@@ -277,6 +277,8 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 
+    	printf("Program[%d]: Name=%s, FD=%d\n", i, progs[i].name, prog_fd);
+
 		if (progs[i].map_prog_idx != -1) {
 			unsigned int map_prog_idx = progs[i].map_prog_idx;
 			if (map_prog_idx < 0) {
